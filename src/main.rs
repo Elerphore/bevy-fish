@@ -2,26 +2,22 @@ use bevy::{
     app::{App, FixedUpdate, Startup},
     asset::Assets,
     color::Color,
-    log::info,
-    math::{Vec3, Vec3Swizzles},
+    math::{Vec2, Vec3, Vec3Swizzles},
     prelude::{Camera2dBundle, Circle, Commands, Component, IntoSystemConfigs, Query, ResMut},
-    render::{mesh::Mesh, view::window},
+    render::mesh::Mesh,
     sprite::{ColorMaterial, MaterialMesh2dBundle, Mesh2dHandle},
     transform::components::Transform,
-    utils::tracing::field::debug,
     window::Window,
     DefaultPlugins,
 };
 use rand::{rngs::ThreadRng, thread_rng, Rng};
 
-const _X_EXTENT: f32 = 900.;
-
-const MAX_SPEED: f32 = 6.0;
-const MIN_SPEED: f32 = 3.0;
-const TURN_FACTOR: f32 = 1.0;
-const AVOID_FACTOR: f32 = 1.5;
-const CENTERING_FACTOR: f32 = 0.5;
-const COHESION_FACTOR: f32 = 0.5;
+const MAX_SPEED: f32 = 5.0;
+const MIN_SPEED: f32 = 2.0;
+const AVOID_FACTOR: f32 = 0.1;
+const MATCHING_FACTOR: f32 = 0.05;
+const CENTERING_FACTOR: f32 = 0.01;
+const NEIGHBOR_RADIUS: f32 = 50.0;
 
 fn main() {
     App::new()
@@ -29,7 +25,16 @@ fn main() {
         .add_systems(Startup, setup)
         .add_systems(
             FixedUpdate,
-            (avoid_factor, speed_limiter, screen_bounce, move_fish).chain(),
+            (
+                avoid_factor,
+                aligment_factor_avg_vector,
+                aligment_factor,
+                cohesion_factor,
+                screen_bounce,
+                speed_limiter,
+                move_fish,
+            )
+                .chain(),
         )
         .run();
 }
@@ -43,7 +48,7 @@ fn setup(
     let circle = Circle { radius: 8.0 };
     let color = Color::hsl(360., 0.95, 0.7);
 
-    for _ in 0..10 {
+    for _ in 0..299 {
         let transform = Transform::from_xyz(
             rnd.gen_range(-100.0..100.0),
             rnd.gen_range(-100.0..100.0),
@@ -57,7 +62,12 @@ fn setup(
                 ..Default::default()
             },
             Fish {
-                vec: transform.translation.xyz(),
+                vec: Vec2::new(rnd.gen_range(-1.0..1.0), rnd.gen_range(-1.0..1.0)).normalize()
+                    * MIN_SPEED,
+            },
+            MetaData {
+                x_vel_avg: Vec2::ZERO,
+                x_pos_avg: Vec2::ZERO,
             },
         ));
     }
@@ -66,41 +76,67 @@ fn setup(
 }
 
 fn move_fish(mut query: Query<(&mut Transform, &mut Fish)>) {
-    query.iter_mut().for_each(|(mut transform, fish)| {
+    for (mut transform, fish) in query.iter_mut() {
         transform.translation.x += fish.vec.x;
         transform.translation.y += fish.vec.y;
-    })
+    }
 }
 
-fn aligment_factor() {}
+fn aligment_factor(mut query: Query<(&mut Fish, &MetaData)>) {
+    for (mut fish, metadata) in query.iter_mut() {
+        let vec = (metadata.x_vel_avg - fish.vec.extend(0.0).xy()) * MATCHING_FACTOR;
+        fish.vec += vec;
+    }
+}
 
-fn cohesion_factor() {}
+fn aligment_factor_avg_vector(mut query: Query<(&mut Transform, &mut Fish, &mut MetaData)>) {
+    let mut total_vel = Vec2::ZERO;
+    let mut total_pos = Vec2::ZERO;
+
+    let count = query.iter().count() as f32;
+
+    for (transform, fish, _) in query.iter() {
+        total_vel += fish.vec;
+        total_pos += transform.translation.xy();
+    }
+
+    for (_, _, mut metadata) in query.iter_mut() {
+        metadata.x_vel_avg = total_vel / count;
+        metadata.x_pos_avg = total_pos / count;
+    }
+}
+
+fn cohesion_factor(mut query: Query<(&mut Transform, &mut MetaData, &mut Fish)>) {
+    for (transform, metadata, mut fish) in query.iter_mut() {
+        let vec = (metadata.x_pos_avg - transform.translation.xy()) * CENTERING_FACTOR;
+        fish.vec += vec;
+    }
+}
 
 fn speed_limiter(mut query: Query<(&mut Transform, &mut Fish)>) {
-    query.iter_mut().for_each(|(_transform, mut fish)| {
-        let speed = (fish.vec.x * fish.vec.x + fish.vec.y * fish.vec.y).sqrt();
+    for (_transform, mut fish) in query.iter_mut() {
+        let speed = fish.vec.length();
 
         if speed > MAX_SPEED {
-            fish.vec.x = (fish.vec.x / speed) * MAX_SPEED;
-            fish.vec.y = (fish.vec.y / speed) * MIN_SPEED;
+            fish.vec = fish.vec.normalize() * MAX_SPEED;
         }
 
         if speed < MIN_SPEED {
-            fish.vec.x = (fish.vec.x / speed) * MIN_SPEED;
-            fish.vec.y = (fish.vec.y / speed) * MIN_SPEED;
+            fish.vec = fish.vec.normalize() * MIN_SPEED;
         }
-    })
+    }
 }
 
 fn avoid_factor(mut query: Query<&mut Fish>) {
     let mut iter = query.iter_combinations_mut();
 
     while let Some([mut fish_one, fish_two]) = iter.fetch_next() {
-        let close_dx = fish_one.vec.x - fish_two.vec.x;
-        let close_dy = fish_one.vec.y - fish_two.vec.y;
+        let distance = (fish_one.vec - fish_two.vec).length();
 
-        fish_one.vec.x += close_dx * AVOID_FACTOR;
-        fish_one.vec.y += close_dy * AVOID_FACTOR;
+        if distance < NEIGHBOR_RADIUS {
+            let avoidance_vector = (fish_one.vec - fish_two.vec).normalize() * AVOID_FACTOR;
+            fish_one.vec += avoidance_vector;
+        }
     }
 }
 
@@ -109,44 +145,41 @@ fn screen_bounce(windows: Query<&Window>, mut query: Query<(&mut Fish, &Transfor
     let height = window.height();
     let width = window.width();
 
-    info!("height: {}, width: {}", height, width);
-
-    let left = width / -2.0;
+    let left = -width / 2.0;
     let right = width / 2.0;
-    let bottom = height / -2.0;
+    let bottom = -height / 2.0;
     let top = height / 2.0;
 
-    const MARGIN: f32 = 200.0;
+    const MARGIN: f32 = 100.0;
 
-    info!(
-        "left: {}, right: {}, top: {}, bottom: {}",
-        left, right, bottom, top
-    );
-
-    query.iter_mut().for_each(|(mut f, t)| {
-        info!("fish x: {}, y: {}", t.translation.x, t.translation.y);
-
-        if t.translation.x < left + MARGIN {
-            f.vec.x += TURN_FACTOR;
+    for (mut fish, transform) in query.iter_mut() {
+        if transform.translation.x < left + MARGIN {
+            fish.vec.x = fish.vec.x.abs();
         }
 
-        if t.translation.x > right - MARGIN {
-            f.vec.x -= TURN_FACTOR;
+        if transform.translation.x > right - MARGIN {
+            fish.vec.x = -fish.vec.x.abs();
         }
 
-        if t.translation.y < top + MARGIN {
-            f.vec.y += TURN_FACTOR;
+        if transform.translation.y > top - MARGIN {
+            fish.vec.y = -fish.vec.y.abs();
         }
 
-        if t.translation.y > bottom - MARGIN {
-            f.vec.y -= TURN_FACTOR;
+        if transform.translation.y < bottom + MARGIN {
+            fish.vec.y = fish.vec.y.abs();
         }
-    })
+    }
 }
 
 #[derive(Component, Debug, Clone, Copy)]
 struct Fish {
-    vec: Vec3,
+    vec: Vec2,
+}
+
+#[derive(Component, Debug)]
+struct MetaData {
+    x_vel_avg: Vec2,
+    x_pos_avg: Vec2,
 }
 
 #[derive(Component)]
