@@ -27,7 +27,7 @@ fn main() {
         .add_systems(Update, ui_example_system)
         .add_systems(
             FixedUpdate,
-            ((
+            (
                 avoid_factor,
                 aligment_factor_avg_vector,
                 aligment_factor,
@@ -36,26 +36,32 @@ fn main() {
                 speed_limiter,
                 move_fish,
             )
-                .chain(),),
+                .chain(),
         )
         .run();
 }
 
 fn ui_example_system(mut contexts: EguiContexts, mut world_state: ResMut<WorldState>) {
-    egui::Window::new("Hello").show(contexts.ctx_mut(), |ui| {
-        ui.label("avoid_factor");
+    egui::Window::new("Factors").show(contexts.ctx_mut(), |ui| {
+        ui.label("Avoid Factor");
         ui.add(egui::Slider::new(&mut world_state.avoid_factor, 0.01..=1.0));
 
-        ui.label("matching_factor");
+        ui.label("Matching Factor");
         ui.add(egui::Slider::new(
             &mut world_state.matching_factor,
             0.01..=0.1,
         ));
 
-        ui.label("centering_factor");
+        ui.label("Centering Factor");
         ui.add(egui::Slider::new(
             &mut world_state.centering_factor,
             0.0005..=0.001,
+        ));
+
+        ui.label("Neighbor Radius");
+        ui.add(egui::Slider::new(
+            &mut world_state.neighbor_radius,
+            10.0..=50.0,
         ));
     });
 }
@@ -73,6 +79,7 @@ fn setup(
     world_state.matching_factor = 0.5;
     world_state.avoid_factor = 0.05;
     world_state.centering_factor = 0.0005;
+    world_state.neighbor_radius = 50.0;
 
     for _ in 0..99 {
         let transform = Transform::from_xyz(
@@ -156,11 +163,11 @@ fn speed_limiter(mut query: Query<(&mut Transform, &mut Fish)>) {
     }
 }
 
-fn avoid_factor(mut query: Query<&mut Fish>, world_state: ResMut<WorldState>) {
+fn avoid_factor(mut query: Query<(&mut Fish, &Transform)>, world_state: ResMut<WorldState>) {
     let mut iter = query.iter_combinations_mut();
 
-    while let Some([mut fish_one, fish_two]) = iter.fetch_next() {
-        let distance = (fish_one.vec - fish_two.vec).length();
+    while let Some([(mut fish_one, transform_one), (fish_two, transform_two)]) = iter.fetch_next() {
+        let distance = (transform_one.translation.xy() - transform_two.translation.xy()).length();
 
         if distance < NEIGHBOR_RADIUS {
             let avoidance_vector =
@@ -220,4 +227,5 @@ struct WorldState {
     avoid_factor: f32,
     centering_factor: f32,
     matching_factor: f32,
+    neighbor_radius: f32,
 }
